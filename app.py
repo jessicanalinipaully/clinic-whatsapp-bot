@@ -29,7 +29,6 @@ def db_connection():
 def init_db():
     conn = db_connection()
     cursor = conn.cursor()
-
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS appointments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,7 +40,22 @@ def init_db():
             status TEXT DEFAULT 'Booked'
         )
     """)
+    conn.commit()
+    conn.close()
 
+
+def update_status(appointment_id, status):
+    conn = db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE appointments SET status = ? WHERE id = ?", (status, appointment_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_appointment(appointment_id):
+    conn = db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM appointments WHERE id = ?", (appointment_id,))
     conn.commit()
     conn.close()
 
@@ -72,7 +86,6 @@ def save_appointment(phone, name, doctor, date, time):
 def cancel_latest_appointment(phone):
     conn = db_connection()
     cursor = conn.cursor()
-
     cursor.execute("""
         SELECT id, doctor, date, time
         FROM appointments
@@ -80,7 +93,6 @@ def cancel_latest_appointment(phone):
         ORDER BY id DESC
         LIMIT 1
     """, (phone,))
-
     appointment = cursor.fetchone()
 
     if appointment is None:
@@ -104,7 +116,6 @@ def cancel_latest_appointment(phone):
 def get_latest_booked_appointment(phone):
     conn = db_connection()
     cursor = conn.cursor()
-
     cursor.execute("""
         SELECT id, name, doctor, date, time
         FROM appointments
@@ -112,7 +123,6 @@ def get_latest_booked_appointment(phone):
         ORDER BY id DESC
         LIMIT 1
     """, (phone,))
-
     appointment = cursor.fetchone()
     conn.close()
 
@@ -167,15 +177,8 @@ def home():
                 padding: 50px;
                 box-shadow: 0 20px 60px rgba(15, 23, 42, 0.12);
             }
-            h1 {
-                font-size: 48px;
-                margin-bottom: 10px;
-            }
-            p {
-                font-size: 18px;
-                color: #475569;
-                line-height: 1.6;
-            }
+            h1 { font-size: 48px; margin-bottom: 10px; }
+            p { font-size: 18px; color: #475569; line-height: 1.6; }
             .features {
                 display: grid;
                 grid-template-columns: repeat(3, 1fr);
@@ -210,8 +213,8 @@ def home():
                     <div class="feature">✅ Cancel & Reschedule</div>
                     <div class="feature">✅ Admin Dashboard</div>
                     <div class="feature">✅ No Double Booking</div>
-                    <div class="feature">✅ SQLite Database</div>
-                    <div class="feature">✅ WhatsApp Ready</div>
+                    <div class="feature">✅ Patient Search</div>
+                    <div class="feature">✅ Dashboard Actions</div>
                 </div>
                 <a class="btn" href="/login">Open Admin Dashboard</a>
             </div>
@@ -234,10 +237,7 @@ def login():
         return redirect("/login?error=1")
 
     error = request.args.get("error")
-
-    error_html = ""
-    if error:
-        error_html = "<div class='error'>Wrong username or password</div>"
+    error_html = "<div class='error'>Wrong username or password</div>" if error else ""
 
     return f"""
     <html>
@@ -260,14 +260,8 @@ def login():
                 border-radius: 22px;
                 box-shadow: 0 20px 50px rgba(15, 23, 42, 0.12);
             }}
-            h2 {{
-                margin-bottom: 8px;
-                color: #0f172a;
-            }}
-            p {{
-                color: #64748b;
-                margin-bottom: 24px;
-            }}
+            h2 {{ margin-bottom: 8px; color: #0f172a; }}
+            p {{ color: #64748b; margin-bottom: 24px; }}
             input {{
                 width: 100%;
                 padding: 14px;
@@ -320,6 +314,38 @@ def logout():
     return redirect("/login")
 
 
+@app.route("/appointment/<int:appointment_id>/cancel", methods=["POST"])
+def dashboard_cancel(appointment_id):
+    if not session.get("admin"):
+        return redirect("/login")
+    update_status(appointment_id, "Cancelled")
+    return redirect("/dashboard")
+
+
+@app.route("/appointment/<int:appointment_id>/complete", methods=["POST"])
+def dashboard_complete(appointment_id):
+    if not session.get("admin"):
+        return redirect("/login")
+    update_status(appointment_id, "Completed")
+    return redirect("/dashboard")
+
+
+@app.route("/appointment/<int:appointment_id>/book", methods=["POST"])
+def dashboard_book(appointment_id):
+    if not session.get("admin"):
+        return redirect("/login")
+    update_status(appointment_id, "Booked")
+    return redirect("/dashboard")
+
+
+@app.route("/appointment/<int:appointment_id>/delete", methods=["POST"])
+def dashboard_delete(appointment_id):
+    if not session.get("admin"):
+        return redirect("/login")
+    delete_appointment(appointment_id)
+    return redirect("/dashboard")
+
+
 @app.route("/dashboard")
 def dashboard():
     if not session.get("admin"):
@@ -352,7 +378,6 @@ def dashboard():
         params.append(status_filter)
 
     query += " ORDER BY id DESC"
-
     cursor.execute(query, params)
     appointments = cursor.fetchall()
 
@@ -365,13 +390,22 @@ def dashboard():
     cursor.execute("SELECT COUNT(*) FROM appointments WHERE status='Cancelled'")
     cancelled = cursor.fetchone()[0]
 
+    cursor.execute("SELECT COUNT(*) FROM appointments WHERE status='Completed'")
+    completed = cursor.fetchone()[0]
+
     conn.close()
 
     rows = ""
 
     for appt in appointments:
+        appointment_id = appt[0]
         status = appt[6]
-        badge_class = "booked" if status == "Booked" else "cancelled"
+
+        badge_class = "booked"
+        if status == "Cancelled":
+            badge_class = "cancelled"
+        elif status == "Completed":
+            badge_class = "completed"
 
         rows += f"""
             <tr>
@@ -382,13 +416,29 @@ def dashboard():
                 <td>{appt[4]}</td>
                 <td>{appt[5]}</td>
                 <td><span class="badge {badge_class}">{status}</span></td>
+                <td>
+                    <div class="actions">
+                        <form method="POST" action="/appointment/{appointment_id}/book">
+                            <button class="small blue" type="submit">Book</button>
+                        </form>
+                        <form method="POST" action="/appointment/{appointment_id}/complete">
+                            <button class="small green" type="submit">Complete</button>
+                        </form>
+                        <form method="POST" action="/appointment/{appointment_id}/cancel">
+                            <button class="small yellow" type="submit">Cancel</button>
+                        </form>
+                        <form method="POST" action="/appointment/{appointment_id}/delete" onsubmit="return confirm('Delete this appointment permanently?');">
+                            <button class="small red" type="submit">Delete</button>
+                        </form>
+                    </div>
+                </td>
             </tr>
         """
 
     if not rows:
         rows = """
             <tr>
-                <td colspan="7" class="empty">No appointments found</td>
+                <td colspan="8" class="empty">No appointments found</td>
             </tr>
         """
 
@@ -399,6 +449,7 @@ def dashboard():
 
     booked_selected = "selected" if status_filter == "Booked" else ""
     cancelled_selected = "selected" if status_filter == "Cancelled" else ""
+    completed_selected = "selected" if status_filter == "Completed" else ""
 
     return f"""
     <html>
@@ -463,7 +514,7 @@ def dashboard():
             }}
             .stats {{
                 display: grid;
-                grid-template-columns: repeat(3, 1fr);
+                grid-template-columns: repeat(4, 1fr);
                 gap: 20px;
                 margin-bottom: 24px;
             }}
@@ -530,6 +581,7 @@ def dashboard():
             td {{
                 padding: 16px;
                 border-top: 1px solid #e2e8f0;
+                vertical-align: middle;
             }}
             .badge {{
                 padding: 7px 12px;
@@ -545,10 +597,39 @@ def dashboard():
                 background: #fee2e2;
                 color: #991b1b;
             }}
+            .completed {{
+                background: #dbeafe;
+                color: #1d4ed8;
+            }}
             .empty {{
                 text-align: center;
                 color: #64748b;
                 padding: 30px;
+            }}
+            .actions {{
+                display: flex;
+                gap: 6px;
+                flex-wrap: wrap;
+            }}
+            .actions form {{
+                margin: 0;
+            }}
+            .small {{
+                padding: 7px 10px;
+                font-size: 12px;
+                border-radius: 8px;
+            }}
+            .blue {{
+                background: #2563eb;
+            }}
+            .green {{
+                background: #16a34a;
+            }}
+            .yellow {{
+                background: #f59e0b;
+            }}
+            .red {{
+                background: #dc2626;
             }}
         </style>
     </head>
@@ -586,6 +667,10 @@ def dashboard():
                     <p>Cancelled</p>
                     <h2>{cancelled}</h2>
                 </div>
+                <div class="stat-card">
+                    <p>Completed</p>
+                    <h2>{completed}</h2>
+                </div>
             </div>
 
             <div class="filters">
@@ -599,6 +684,7 @@ def dashboard():
                         <option value="">All Status</option>
                         <option value="Booked" {booked_selected}>Booked</option>
                         <option value="Cancelled" {cancelled_selected}>Cancelled</option>
+                        <option value="Completed" {completed_selected}>Completed</option>
                     </select>
                     <button type="submit">Filter</button>
                 </form>
@@ -614,6 +700,7 @@ def dashboard():
                         <th>Date</th>
                         <th>Time</th>
                         <th>Status</th>
+                        <th>Actions</th>
                     </tr>
                     {rows}
                 </table>
@@ -657,40 +744,13 @@ def whatsapp():
         user_sessions[phone] = {"step": "start"}
         return str(response)
 
-    if incoming_msg == "reschedule":
-        appointment = get_latest_booked_appointment(phone)
-
-        if appointment is None:
-            msg.body(
-                "You don't have any active appointment to reschedule.\n\n"
-                "Type HI to book an appointment."
-            )
-            user_sessions[phone] = {"step": "start"}
-            return str(response)
-
-        current_user["step"] = "reschedule_date"
-        current_user["reschedule_id"] = appointment["id"]
-        current_user["reschedule_doctor"] = appointment["doctor"]
-        current_user["reschedule_name"] = appointment["name"]
-
-        msg.body(
-            "Your current appointment:\n\n"
-            f"Doctor: {appointment['doctor']}\n"
-            f"Date: {appointment['date']}\n"
-            f"Time: {appointment['time']}\n\n"
-            "Please enter your new appointment date.\n"
-            "Example: 15 June 2026"
-        )
-        return str(response)
-
     if incoming_msg in ["hi", "hello", "start"]:
         current_user["step"] = "menu"
         msg.body(
             "Welcome to ABC Clinic 🏥\n\n"
             "1. Book Appointment\n"
             "2. Doctor Availability\n\n"
-            "Type CANCEL to cancel your latest appointment.\n"
-            "Type RESCHEDULE to reschedule your latest appointment."
+            "Type CANCEL to cancel your latest appointment."
         )
 
     elif current_user["step"] == "menu":
@@ -698,12 +758,7 @@ def whatsapp():
             current_user["step"] = "name"
             msg.body("Please enter your full name:")
         elif incoming_msg == "2":
-            msg.body(
-                "Doctors Available Today:\n\n"
-                "1. Dr. Kumar\n"
-                "2. Dr. Sharma\n\n"
-                "Type HI to return to menu."
-            )
+            msg.body("Doctors Available Today:\n\n1. Dr. Kumar\n2. Dr. Sharma")
         else:
             msg.body("Please choose 1 or 2.")
 
@@ -732,11 +787,7 @@ def whatsapp():
             time = slots[incoming_msg]
 
             if is_slot_booked(doctor, date, time):
-                msg.body(
-                    "Sorry, this slot is already booked.\n\n"
-                    "Please choose another time slot:\n\n"
-                    "1. 10:00 AM\n2. 11:30 AM\n3. 4:00 PM"
-                )
+                msg.body("Sorry, this slot is already booked. Please choose another slot.")
                 return str(response)
 
             save_appointment(phone, current_user["name"], doctor, date, time)
@@ -748,42 +799,6 @@ def whatsapp():
                 f"Date: {date}\n"
                 f"Time: {time}\n\n"
                 "Thank you for booking with ABC Clinic."
-            )
-
-            user_sessions[phone] = {"step": "start"}
-        else:
-            msg.body("Please choose 1, 2, or 3.")
-
-    elif current_user["step"] == "reschedule_date":
-        current_user["new_date"] = incoming_msg.title()
-        current_user["step"] = "reschedule_slot"
-        msg.body("Choose new time slot:\n\n1. 10:00 AM\n2. 11:30 AM\n3. 4:00 PM")
-
-    elif current_user["step"] == "reschedule_slot":
-        if incoming_msg in slots:
-            appointment_id = current_user["reschedule_id"]
-            doctor = current_user["reschedule_doctor"]
-            name = current_user["reschedule_name"]
-            new_date = current_user["new_date"]
-            new_time = slots[incoming_msg]
-
-            if is_slot_booked(doctor, new_date, new_time):
-                msg.body(
-                    "Sorry, this new slot is already booked.\n\n"
-                    "Please choose another time slot:\n\n"
-                    "1. 10:00 AM\n2. 11:30 AM\n3. 4:00 PM"
-                )
-                return str(response)
-
-            update_appointment_date_time(appointment_id, new_date, new_time)
-
-            msg.body(
-                "✅ Appointment Rescheduled!\n\n"
-                f"Name: {name}\n"
-                f"Doctor: {doctor}\n"
-                f"New Date: {new_date}\n"
-                f"New Time: {new_time}\n\n"
-                "Thank you. Your appointment has been updated."
             )
 
             user_sessions[phone] = {"step": "start"}
